@@ -27,6 +27,7 @@
   let storageReady = false;
   let visitorId = crypto.randomUUID();
   try { visitorId = sessionStorage.getItem('diicsa-olivia-visitor') || visitorId; sessionStorage.setItem('diicsa-olivia-visitor', visitorId); } catch {}
+  let lead = {};
   const history = [];
   const seen = new Set();
   function add(role, text, id) {
@@ -62,7 +63,42 @@
     identity = data.identity;
     expiresAt = Date.now() + 50 * 60 * 1000;
   }
-  const metadata = () => ({ language: 'es', pageUrl: location.href, pageTitle: document.title, dataConsent: true, dataConsentAt: accepted, consentVersion: 'diicsatucasa-chat-2026-10-14' });
+  const metadata = () => ({ lead, language: 'es', pageUrl: location.href, pageTitle: document.title, dataConsent: true, dataConsentAt: accepted, consentVersion: 'diicsatucasa-chat-2026-10-14' });
+  function showLeadForm() {
+    if ($('.olivia-lead')) return;
+    const form = document.createElement('form');
+    form.className = 'olivia-lead';
+    form.innerHTML = `<strong>Datos para seguimiento</strong><p>Se guardan en la plataforma Olivia. No confirman una cita ni una notificación a DIICSA.</p>
+      <label>Nombre<input name="firstName" autocomplete="given-name" maxlength="80" required></label>
+      <label>Apellido<input name="lastName" autocomplete="family-name" maxlength="80" required></label>
+      <label>Correo electrónico<input name="email" type="email" autocomplete="email" maxlength="150" required></label>
+      <label>Teléfono<input name="phone" type="tel" autocomplete="tel" maxlength="30" required></label>
+      <label>¿Qué necesitas?<textarea name="details" maxlength="1500" required></textarea></label>
+      <button type="submit">Guardar mis datos</button><button type="button" class="olivia-lead-cancel">Ahora no</button><p role="status"></p>`;
+    for (const [key,value] of Object.entries(lead)) {
+      const field = form.elements.namedItem(key);
+      if (field) field.value = value;
+    }
+    form.querySelector('.olivia-lead-cancel').addEventListener('click', () => form.remove());
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = form.querySelector('[type="submit"]');
+      button.disabled = true;
+      const nextLead = Object.fromEntries(new FormData(form));
+      try {
+        await identify();
+        const content = `Solicitud de seguimiento: ${nextLead.details}`;
+        await request('/widget/conversations', { method: 'POST', body: JSON.stringify({ clientCode, visitorId, source: 'website', language: 'es', visitorName: `${nextLead.firstName} ${nextLead.lastName}`, email: nextLead.email, phone: nextLead.phone, content, metadata: { ...metadata(), lead: nextLead } }) });
+        lead = nextLead;
+        add('assistant', 'Tus datos se guardaron en Olivia para seguimiento. Esto no confirma una cita ni el envío de una notificación a DIICSA.');
+        form.remove();
+      } catch {
+        form.querySelector('[role="status"]').textContent = 'No se guardaron tus datos. Intenta nuevamente.';
+      } finally { button.disabled = false; }
+    });
+    log.append(form);
+    log.scrollTop = log.scrollHeight;
+  }
   async function poll() {
     if (!accepted || panel.hidden || busy) return;
     try {
@@ -113,6 +149,7 @@
       const data = await request('/olivia/chat', { method: 'POST', body: JSON.stringify({ clientCode, visitorId, message, language: 'es', metadata: metadata(), history: history.slice(-12) }) });
       if (!data.reply) throw new Error('Empty reply');
       add('assistant', data.reply);
+      if (data.action === 'show_lead_form' || data.leadForm) showLeadForm();
       history.push({ role: 'user', content: message }, { role: 'assistant', content: data.reply });
       if (storageReady) {
         try { await request('/widget/conversations', { method: 'PATCH', body: JSON.stringify({ clientCode, visitorId, content: data.reply, metadata: { mode: data.mode } }) }); }
